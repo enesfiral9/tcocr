@@ -3,10 +3,11 @@ import cv2
 from app import config
 from app.logger import logger
 from app.schemas import DocumentResult, FieldResult
-from app.ocr.card_detector import detect_identity_card
+from app.ocr.card_detector import detect_identity_cards
 from app.ocr.card_normalizer import correct_perspective
 from app.ocr.field_extractor import extract_fields, draw_field_coordinates
 from app.ocr.preprocessing import field_variants, to_grayscale
+from app.ocr.card_parser import parse_identity_lines
 from app.validators.field_normalizer import normalize_field
 from app.validators.tc_validator import validate_tc_number
 from app.validators.name_validator import validate_name
@@ -37,29 +38,40 @@ class ScanService:
             page_dir.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(page_dir / "original.png"), image)
             cv2.imwrite(str(page_dir / "grayscale.png"), to_grayscale(image))
-        corners, edges = detect_identity_card(image)
+        card_corners, edges = detect_identity_cards(image)
         if page_dir:
             cv2.imwrite(str(page_dir / "edges.png"), edges)
-        if corners is None:
+        if not card_corners:
             return DocumentResult(page=page, failed=True, errors=["Kimlik kartı tespit edilemedi."])
-        card = correct_perspective(image, corners)
-        if page_dir:
-            cv2.imwrite(str(page_dir / "normalized_card.png"), card)
-            cv2.imwrite(str(page_dir / "detected_card.png"), card)
-            cv2.imwrite(str(page_dir / "card_with_fields.png"), draw_field_coordinates(card))
-        fields, confidence, invalid = self._read_card(card, page_dir)
-        if invalid or confidence < config.CONFIDENCE_SUCCESS:
-            rotated = cv2.rotate(card, cv2.ROTATE_180)
-            rotated_fields, rotated_confidence, rotated_invalid = self._read_card(rotated, None)
-            if self._quality(rotated_fields, rotated_confidence) > self._quality(fields, confidence):
-                card, fields, confidence, invalid = rotated, rotated_fields, rotated_confidence, rotated_invalid
-                if page_dir:
-                    cv2.imwrite(str(page_dir / "normalized_card_rotated.png"), card)
+        fields = {}
+        for card_index, corners in enumerate(card_corners, 1):
+            card = correct_perspective(image, corners)
+            card_dir = page_dir / f"card_{card_index:02d}" if page_dir else None
+            if card_dir:
+                card_dir.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(card_dir / "normalized_card.png"), card)
+                cv2.imwrite(str(card_dir / "card_with_fields.png"), draw_field_coordinates(card))
+            card_fields, card_confidence, card_invalid = self._read_card(card, card_dir)
+            if card_invalid or card_confidence < config.CONFIDENCE_SUCCESS:
+                rotated = cv2.rotate(card, cv2.ROTATE_180)
+                rotated_fields, rotated_confidence, _ = self._read_card(rotated, None)
+                if self._quality(rotated_fields, rotated_confidence) > self._quality(card_fields, card_confidence):
+                    card, card_fields = rotated, rotated_fields
+                    if card_dir:
+                        cv2.imwrite(str(card_dir / "normalized_card_rotated.png"), card)
+            for name, candidate in card_fields.items():
+                current = fields.get(name)
+                if current is None or (candidate.valid, candidate.confidence) > (current.valid, current.confidence):
+                    fields[name] = candidate
+        populated = [field for field in fields.values() if field.value]
+        confidence = sum(field.confidence for field in populated) / len(populated) if populated else 0.0
+        invalid = [name for name, field in fields.items() if not field.valid]
         review = bool(invalid) or confidence < config.CONFIDENCE_SUCCESS
         errors = [f"{name} alanı doğrulanamadı." for name in invalid]
         return DocumentResult(page=page, **fields, overall_confidence=confidence, requires_review=review, errors=errors)
 
     def _read_card(self, card, page_dir: Path | None):
+        parsed = parse_identity_lines(self.ocr.recognize_lines(card))
         crops = extract_fields(card)
         fields = {}
         validators = {"tc_no": validate_tc_number, "name": validate_name, "surname": validate_name,
@@ -76,7 +88,19 @@ class ScanService:
                 if valid and confidence >= config.CONFIDENCE_SUCCESS:
                     break
             fields[name] = max(attempts, key=lambda item: (item.valid, item.confidence, len(item.value)))
-        confidence = sum(field.confidence for field in fields.values()) / len(fields)
+        for name, candidate in parsed.items():
+            current = fields.get(name)
+            # Label/position parsing identifies the semantic field. A crop may
+            # have higher OCR confidence while actually reading a neighbouring
+            # label, so a valid parsed value must take precedence.
+            if current is None or candidate.valid or (not current.valid and candidate.confidence > current.confidence):
+                fields[name] = candidate
+        expected = ("tc_no", "name", "surname", "birth_date", "serial_no", "expiry_date",
+                    "gender", "nationality", "mother_name", "father_name", "issuing_authority")
+        for name in expected:
+            fields.setdefault(name, FieldResult())
+        populated = [field for field in fields.values() if field.value]
+        confidence = sum(field.confidence for field in populated) / len(populated) if populated else 0.0
         invalid = [name for name, field in fields.items() if not field.valid]
         return fields, confidence, invalid
 

@@ -4,7 +4,7 @@ from app.config import CARD_ASPECT_RATIO, CARD_RATIO_TOLERANCE, MIN_CARD_AREA_RA
 from .preprocessing import detect_edges, to_grayscale
 
 
-def detect_identity_card(image: np.ndarray) -> tuple[np.ndarray | None, np.ndarray]:
+def detect_identity_cards(image: np.ndarray, limit: int = 4) -> tuple[list[np.ndarray], np.ndarray]:
     edges = detect_edges(image)
     page_area = image.shape[0] * image.shape[1]
     candidates = []
@@ -35,4 +35,28 @@ def detect_identity_card(image: np.ndarray) -> tuple[np.ndarray | None, np.ndarr
             if abs(ratio - CARD_ASPECT_RATIO) <= CARD_RATIO_TOLERANCE and rectangularity >= .45:
                 ratio_score = 1 - abs(ratio - CARD_ASPECT_RATIO) / CARD_RATIO_TOLERANCE
                 candidates.append((area * (.7 + .3 * ratio_score), points))
-    return (max(candidates, key=lambda item: item[0])[1] if candidates else None), edges
+    selected = []
+    for _, points in sorted(candidates, key=lambda item: item[0], reverse=True):
+        x, y, width, height = cv2.boundingRect(points.astype(np.int32))
+        box = (x, y, x + width, y + height)
+        duplicate = False
+        for _, existing_box in selected:
+            ix1, iy1 = max(box[0], existing_box[0]), max(box[1], existing_box[1])
+            ix2, iy2 = min(box[2], existing_box[2]), min(box[3], existing_box[3])
+            intersection = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            smaller = min((box[2] - box[0]) * (box[3] - box[1]),
+                          (existing_box[2] - existing_box[0]) * (existing_box[3] - existing_box[1]))
+            if smaller and intersection / smaller > .65:
+                duplicate = True
+                break
+        if not duplicate:
+            selected.append((points, box))
+        if len(selected) >= limit:
+            break
+    selected.sort(key=lambda item: (item[1][1], item[1][0]))
+    return [item[0] for item in selected], edges
+
+
+def detect_identity_card(image: np.ndarray) -> tuple[np.ndarray | None, np.ndarray]:
+    cards, edges = detect_identity_cards(image, limit=1)
+    return (cards[0] if cards else None), edges

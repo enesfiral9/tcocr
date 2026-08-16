@@ -34,12 +34,18 @@ class PaddleOCRService:
             self.ocr = None
 
     def recognize(self, image: np.ndarray) -> tuple[str, float]:
+        lines = self.recognize_lines(image)
+        return " ".join(item["text"] for item in lines).strip(), (
+            sum(item["confidence"] for item in lines) / len(lines) if lines else 0.0
+        )
+
+    def recognize_lines(self, image: np.ndarray) -> list[dict]:
         if not self.ready:
             raise RuntimeError("OCR engine is not ready.")
         if image.ndim == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         result = self.ocr.predict(image)
-        texts, scores = [], []
+        lines = []
         for item in result:
             payload = getattr(item, "json", item)
             if callable(payload):
@@ -47,6 +53,10 @@ class PaddleOCRService:
             if isinstance(payload, dict) and "res" in payload:
                 payload = payload["res"]
             if isinstance(payload, dict):
-                texts.extend(payload.get("rec_texts", []))
-                scores.extend(float(x) for x in payload.get("rec_scores", []))
-        return " ".join(texts).strip(), (sum(scores) / len(scores) if scores else 0.0)
+                texts = payload.get("rec_texts", [])
+                scores = payload.get("rec_scores", [])
+                boxes = payload.get("rec_boxes", [])
+                for index, text in enumerate(texts):
+                    box = boxes[index].tolist() if index < len(boxes) else []
+                    lines.append({"text": str(text).strip(), "confidence": float(scores[index]), "box": box})
+        return [line for line in lines if line["text"]]
