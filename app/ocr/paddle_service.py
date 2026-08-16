@@ -57,6 +57,10 @@ class PaddleOCRService:
                 scores = payload.get("rec_scores", [])
                 boxes = payload.get("rec_boxes", [])
                 for index, text in enumerate(texts):
-                    box = boxes[index].tolist() if index < len(boxes) else []
+                    if index < len(boxes):
+                        raw_box = boxes[index]
+                        box = raw_box.tolist() if hasattr(raw_box, "tolist") else list(raw_box)
+                    else:
+                        box = []
                     lines.append({"text": str(text).strip(), "confidence": float(scores[index]), "box": box})
         return [line for line in lines if line["text"]]
