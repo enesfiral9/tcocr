@@ -6,7 +6,7 @@ from app.schemas import DocumentResult, FieldResult
 from app.ocr.card_detector import detect_identity_card
 from app.ocr.card_normalizer import correct_perspective
 from app.ocr.field_extractor import extract_fields, draw_field_coordinates
-from app.ocr.preprocessing import preprocess_field, to_grayscale
+from app.ocr.preprocessing import field_variants, to_grayscale
 from app.validators.field_normalizer import normalize_field
 from app.validators.tc_validator import validate_tc_number
 from app.validators.name_validator import validate_name
@@ -47,22 +47,42 @@ class ScanService:
             cv2.imwrite(str(page_dir / "normalized_card.png"), card)
             cv2.imwrite(str(page_dir / "detected_card.png"), card)
             cv2.imwrite(str(page_dir / "card_with_fields.png"), draw_field_coordinates(card))
+        fields, confidence, invalid = self._read_card(card, page_dir)
+        if invalid or confidence < config.CONFIDENCE_SUCCESS:
+            rotated = cv2.rotate(card, cv2.ROTATE_180)
+            rotated_fields, rotated_confidence, rotated_invalid = self._read_card(rotated, None)
+            if self._quality(rotated_fields, rotated_confidence) > self._quality(fields, confidence):
+                card, fields, confidence, invalid = rotated, rotated_fields, rotated_confidence, rotated_invalid
+                if page_dir:
+                    cv2.imwrite(str(page_dir / "normalized_card_rotated.png"), card)
+        review = bool(invalid) or confidence < config.CONFIDENCE_SUCCESS
+        errors = [f"{name} alanı doğrulanamadı." for name in invalid]
+        return DocumentResult(page=page, **fields, overall_confidence=confidence, requires_review=review, errors=errors)
+
+    def _read_card(self, card, page_dir: Path | None):
         crops = extract_fields(card)
         fields = {}
         validators = {"tc_no": validate_tc_number, "name": validate_name, "surname": validate_name,
                       "birth_date": validate_date, "serial_no": lambda value: bool(value) and 5 <= len(value) <= 12}
         for name, crop in crops.items():
-            processed = preprocess_field(crop, numeric=name in {"tc_no", "birth_date"})
-            if page_dir:
-                cv2.imwrite(str(page_dir / f"{name}.png"), processed)
-            raw, confidence = self.ocr.recognize(processed)
-            value = normalize_field(name, raw)
-            fields[name] = FieldResult(value=value, raw_value=raw, confidence=confidence, valid=validators[name](value))
+            attempts = []
+            for variant_index, processed in enumerate(field_variants(crop, numeric=name in {"tc_no", "birth_date"})):
+                if page_dir:
+                    cv2.imwrite(str(page_dir / f"{name}_v{variant_index + 1}.png"), processed)
+                raw, confidence = self.ocr.recognize(processed)
+                value = normalize_field(name, raw)
+                valid = validators[name](value)
+                attempts.append(FieldResult(value=value, raw_value=raw, confidence=confidence, valid=valid))
+                if valid and confidence >= config.CONFIDENCE_SUCCESS:
+                    break
+            fields[name] = max(attempts, key=lambda item: (item.valid, item.confidence, len(item.value)))
         confidence = sum(field.confidence for field in fields.values()) / len(fields)
         invalid = [name for name, field in fields.items() if not field.valid]
-        review = bool(invalid) or confidence < config.CONFIDENCE_SUCCESS
-        errors = [f"{name} alanı doğrulanamadı." for name in invalid]
-        return DocumentResult(page=page, **fields, overall_confidence=confidence, requires_review=review, errors=errors)
+        return fields, confidence, invalid
+
+    @staticmethod
+    def _quality(fields: dict[str, FieldResult], confidence: float) -> tuple[int, float, int]:
+        return sum(field.valid for field in fields.values()), confidence, sum(bool(field.value) for field in fields.values())
 
 
 def summarize(results: list[DocumentResult]) -> dict[str, int]:
