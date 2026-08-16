@@ -6,7 +6,7 @@ from app.schemas import DocumentResult, FieldResult
 from app.ocr.card_detector import detect_identity_cards
 from app.ocr.card_normalizer import correct_perspective
 from app.ocr.field_extractor import extract_fields, draw_field_coordinates
-from app.ocr.preprocessing import field_variants, to_grayscale
+from app.ocr.preprocessing import enhance_contrast, field_variants, threshold_image, to_grayscale
 from app.ocr.card_parser import parse_identity_lines
 from app.validators.field_normalizer import normalize_field
 from app.validators.tc_validator import validate_tc_number
@@ -72,6 +72,18 @@ class ScanService:
 
     def _read_card(self, card, page_dir: Path | None):
         parsed = parse_identity_lines(self.ocr.recognize_lines(card))
+        if "tc_no" not in parsed or len(parsed) < 6:
+            for variant_index, variant in enumerate((enhance_contrast(card), threshold_image(card)), 1):
+                if page_dir:
+                    cv2.imwrite(str(page_dir / f"full_card_ocr_v{variant_index}.png"), variant)
+                alternate = parse_identity_lines(self.ocr.recognize_lines(variant))
+                for name, candidate in alternate.items():
+                    current = parsed.get(name)
+                    if current is None or (candidate.valid, candidate.confidence, bool(candidate.value)) > (
+                            current.valid, current.confidence, bool(current.value)):
+                        parsed[name] = candidate
+                if "tc_no" in parsed and parsed["tc_no"].valid and len(parsed) >= 8:
+                    break
         crops = extract_fields(card)
         fields = {}
         validators = {"tc_no": validate_tc_number, "name": validate_name, "surname": validate_name,

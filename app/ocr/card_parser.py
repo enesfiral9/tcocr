@@ -63,7 +63,25 @@ def _valid(field: str, value: str) -> bool:
         return validate_date(value) if field == "birth_date" else bool(re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", value))
     if field == "serial_no":
         return bool(re.fullmatch(r"[A-Z]\d{2}[A-Z]\d{5}", value))
+    if field == "gender":
+        return normalize_gender(value) != ""
+    if field == "nationality":
+        return normalize_nationality(value) != ""
     return bool(value)
+
+
+def normalize_gender(value: str) -> str:
+    token = re.sub(r"\s+", "", ascii_upper(value))
+    mapping = {
+        "E/M": "E/M", "M/E": "E/M", "E": "E/M", "M": "E/M", "ERKEK": "E/M", "MALE": "E/M",
+        "K/F": "K/F", "F/K": "K/F", "K": "K/F", "F": "K/F", "KADIN": "K/F", "FEMALE": "K/F",
+    }
+    return mapping.get(token, "")
+
+
+def normalize_nationality(value: str) -> str:
+    token = re.sub(r"[^A-Z.]", "", ascii_upper(value))
+    return "TUR" if token in {"TUR", "TURK", "TURKIYE", "T.C.", "TC"} else ""
 
 
 def parse_identity_lines(lines: list[dict]) -> dict[str, FieldResult]:
@@ -71,8 +89,11 @@ def parse_identity_lines(lines: list[dict]) -> dict[str, FieldResult]:
     # Strong pattern fields do not depend on label OCR quality.
     for line in lines:
         tc = normalize_field("tc_no", line["text"])
-        if validate_tc_number(tc):
-            parsed["tc_no"] = FieldResult(value=tc, raw_value=line["text"], confidence=line["confidence"], valid=True)
+        if len(tc) == 11:
+            candidate = FieldResult(value=tc, raw_value=line["text"], confidence=line["confidence"], valid=validate_tc_number(tc))
+            current = parsed.get("tc_no")
+            if current is None or (candidate.valid, candidate.confidence) > (current.valid, current.confidence):
+                parsed["tc_no"] = candidate
         serial = normalize_field("serial_no", line["text"])
         match = re.search(r"[A-Z]\d{2}[A-Z]\d{5}", serial)
         if match:
@@ -95,7 +116,14 @@ def parse_identity_lines(lines: list[dict]) -> dict[str, FieldResult]:
         value = normalize_field(field, candidate["text"])
         if field in {"expiry_date"}:
             value = normalize_date(candidate["text"])
-        parsed[field] = FieldResult(value=value, raw_value=candidate["text"], confidence=candidate["confidence"], valid=_valid(field, value))
+        if field == "gender":
+            value = normalize_gender(candidate["text"])
+        elif field == "nationality":
+            value = normalize_nationality(candidate["text"])
+        result = FieldResult(value=value, raw_value=candidate["text"], confidence=candidate["confidence"], valid=_valid(field, value))
+        current = parsed.get(field)
+        if current is None or (result.valid, result.confidence, bool(result.value)) > (current.valid, current.confidence, bool(current.value)):
+            parsed[field] = result
 
     if "birth_date" not in parsed and dates:
         value, line = dates[0]
@@ -106,8 +134,10 @@ def parse_identity_lines(lines: list[dict]) -> dict[str, FieldResult]:
 
     for line in lines:
         token = ascii_upper(line["text"]).strip()
-        if "gender" not in parsed and token in {"E/M", "K/F", "M", "F", "ERKEK", "KADIN"}:
-            parsed["gender"] = FieldResult(value=line["text"].upper(), raw_value=line["text"], confidence=line["confidence"], valid=True)
-        if "nationality" not in parsed and token in {"TUR", "TURK", "TURKIYE", "T.C."}:
-            parsed["nationality"] = FieldResult(value=line["text"].upper(), raw_value=line["text"], confidence=line["confidence"], valid=True)
+        gender = normalize_gender(token)
+        if gender:
+            parsed["gender"] = FieldResult(value=gender, raw_value=line["text"], confidence=line["confidence"], valid=True)
+        nationality = normalize_nationality(token)
+        if nationality:
+            parsed["nationality"] = FieldResult(value=nationality, raw_value=line["text"], confidence=line["confidence"], valid=True)
     return parsed

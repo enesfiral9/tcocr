@@ -28,3 +28,19 @@ def test_parses_front_and_back_labels_and_patterns():
     assert parsed["mother_name"].value == "AYŞE"
     assert parsed["father_name"].value == "MEHMET"
     assert parsed["issuing_authority"].value == "T.C. İÇİŞLERİ BAKANLIĞI"
+
+
+def test_keeps_eleven_digit_tc_candidate_for_manual_review():
+    parsed = parse_identity_lines([line("12345678901", .91)])
+    assert parsed["tc_no"].value == "12345678901"
+    assert not parsed["tc_no"].valid
+
+
+def test_gender_cannot_be_confused_with_nationality():
+    parsed = parse_identity_lines([
+        line("CİNSİYETİ / GENDER"), line("TUR"),
+        line("UYRUĞU / NATIONALITY"), line("TUR"),
+        line("E / M"),
+    ])
+    assert parsed["gender"].value == "E/M"
+    assert parsed["nationality"].value == "TUR"
