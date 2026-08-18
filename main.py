@@ -17,6 +17,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=APP_NAME, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def disable_frontend_cache(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
+
+
 for module in (health, scan, export, cleanup):
     app.include_router(module.router)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "frontend"), name="static")

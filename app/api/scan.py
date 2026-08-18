@@ -14,11 +14,10 @@ router = APIRouter(prefix="/api")
 async def scan(
     request: Request,
     files: list[UploadFile] | None = File(None),
-    legacy_file: UploadFile | None = File(None, alias="file"),
+    legacy_files: list[UploadFile] | None = File(None, alias="file"),
 ):
     uploads = list(files or [])
-    if legacy_file is not None:
-        uploads.append(legacy_file)
+    uploads.extend(legacy_files or [])
     if not uploads:
         raise HTTPException(400, "En az bir dosya seçilmelidir.")
     validated = []
