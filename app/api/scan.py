@@ -11,11 +11,18 @@ router = APIRouter(prefix="/api")
 
 
 @router.post("/scan")
-async def scan(request: Request, files: list[UploadFile] = File(...)):
-    if not files:
+async def scan(
+    request: Request,
+    files: list[UploadFile] | None = File(None),
+    legacy_file: UploadFile | None = File(None, alias="file"),
+):
+    uploads = list(files or [])
+    if legacy_file is not None:
+        uploads.append(legacy_file)
+    if not uploads:
         raise HTTPException(400, "En az bir dosya seçilmelidir.")
     validated = []
-    for file in files:
+    for file in uploads:
         extension = Path(file.filename or "").suffix.lower()
         if extension not in config.ALLOWED_EXTENSIONS or file.content_type not in config.ALLOWED_MIME_TYPES:
             raise HTTPException(415, "Yalnızca PDF, JPG, JPEG ve PNG dosyaları kabul edilir.")

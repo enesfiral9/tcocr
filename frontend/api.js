@@ -1,7 +1,13 @@
 export async function scanDocuments(files) {
   const body = new FormData(); files.forEach(file => body.append('files', file));
   const response = await fetch('/api/scan', { method: 'POST', body });
-  if (!response.ok) throw new Error((await response.json()).detail || 'Tarama başarısız.');
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const detail = Array.isArray(payload.detail)
+      ? payload.detail.map(item => item.msg || String(item)).join(', ')
+      : payload.detail;
+    throw new Error(typeof detail === 'string' ? detail : 'Tarama başlatılamadı.');
+  }
   return response.json();
 }
 export async function checkHealth() { return (await fetch('/api/health')).json(); }
