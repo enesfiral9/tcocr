@@ -52,12 +52,15 @@ class ScanService:
                 card_dir.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(card_dir / "normalized_card.png"), card)
                 cv2.imwrite(str(card_dir / "card_with_fields.png"), draw_field_coordinates(card))
-            card_fields, card_confidence, card_invalid = self._read_card(card, card_dir)
-            if card_invalid or card_confidence < config.CONFIDENCE_SUCCESS:
+            card_fields, card_confidence, card_invalid, semantic_count = self._read_card(card, card_dir)
+            # Rotate only when OCR could not identify enough semantic fields.
+            # Missing back-side fields on a valid front must not trigger a full
+            # second OCR pass.
+            if semantic_count < 2:
                 rotated = cv2.rotate(card, cv2.ROTATE_180)
-                rotated_fields, rotated_confidence, _ = self._read_card(rotated, None)
+                rotated_fields, rotated_confidence, _, rotated_semantic_count = self._read_card(rotated, None)
                 if self._quality(rotated_fields, rotated_confidence) > self._quality(card_fields, card_confidence):
-                    card, card_fields = rotated, rotated_fields
+                    card, card_fields, semantic_count = rotated, rotated_fields, rotated_semantic_count
                     if card_dir:
                         cv2.imwrite(str(card_dir / "normalized_card_rotated.png"), card)
             for name, candidate in card_fields.items():
@@ -73,7 +76,10 @@ class ScanService:
 
     def _read_card(self, card, page_dir: Path | None):
         parsed = parse_identity_lines(self.ocr.recognize_lines(card))
-        if "tc_no" not in parsed or len(parsed) < 6:
+        semantic_count = sum(bool(field.value) for field in parsed.values())
+        # If absolutely nothing is recognized, orientation is the likely cause;
+        # let the caller try 180° instead of spending two threshold passes here.
+        if 0 < semantic_count < 3:
             for variant_index, variant in enumerate((enhance_contrast(card), threshold_image(card)), 1):
                 if page_dir:
                     cv2.imwrite(str(page_dir / f"full_card_ocr_v{variant_index}.png"), variant)
@@ -83,13 +89,23 @@ class ScanService:
                     if current is None or (candidate.valid, candidate.confidence, bool(candidate.value)) > (
                             current.valid, current.confidence, bool(current.value)):
                         parsed[name] = candidate
-                if "tc_no" in parsed and parsed["tc_no"].valid and len(parsed) >= 8:
+                if len(parsed) >= 4:
                     break
+            semantic_count = sum(bool(field.value) for field in parsed.values())
         crops = extract_fields(card)
-        fields = {}
+        fields = dict(parsed)
         validators = {"tc_no": validate_tc_number, "name": validate_name, "surname": validate_name,
                       "birth_date": validate_date, "serial_no": lambda value: bool(value) and 5 <= len(value) <= 12}
-        for name, crop in crops.items():
+        front_fields = {"tc_no", "name", "surname", "birth_date", "serial_no", "expiry_date", "gender", "nationality"}
+        back_fields = {"mother_name", "father_name", "issuing_authority"}
+        front_evidence = sum(name in parsed and bool(parsed[name].value) for name in front_fields)
+        back_evidence = sum(name in parsed and bool(parsed[name].value) for name in back_fields)
+        # Coordinate crops are a fallback only for front-side fields that the
+        # semantic full-card pass missed or could not validate.
+        crop_names = list(crops) if front_evidence >= back_evidence else []
+        crop_names = [name for name in crop_names if name not in parsed or not parsed[name].valid]
+        for name in crop_names:
+            crop = crops[name]
             attempts = []
             for variant_index, processed in enumerate(field_variants(crop, numeric=name in {"tc_no", "birth_date"})):
                 if page_dir:
@@ -100,14 +116,16 @@ class ScanService:
                 attempts.append(FieldResult(value=value, raw_value=raw, confidence=confidence, valid=valid))
                 if valid and confidence >= config.CONFIDENCE_SUCCESS:
                     break
-            fields[name] = max(attempts, key=lambda item: (item.valid, item.confidence, len(item.value)))
-        for name, candidate in parsed.items():
+            crop_result = max(attempts, key=lambda item: (item.valid, item.confidence, len(item.value)))
             current = fields.get(name)
-            # Label/position parsing identifies the semantic field. A crop may
-            # have higher OCR confidence while actually reading a neighbouring
-            # label, so a valid parsed value must take precedence.
-            if current is None or candidate.valid or (not current.valid and candidate.confidence > current.confidence):
-                fields[name] = candidate
+            if current is None or (crop_result.valid, crop_result.confidence) > (current.valid, current.confidence):
+                fields[name] = crop_result
+        # A successful coordinate fallback is also enough orientation evidence;
+        # avoid rotating and reading the same card once more.
+        semantic_count = max(
+            semantic_count,
+            sum(bool(field.value) and field.valid for field in fields.values()),
+        )
         expected = ("tc_no", "name", "surname", "birth_date", "serial_no", "expiry_date",
                     "gender", "nationality", "mother_name", "father_name", "issuing_authority")
         for name in expected:
@@ -115,7 +133,7 @@ class ScanService:
         populated = [field for field in fields.values() if field.value]
         confidence = sum(field.confidence for field in populated) / len(populated) if populated else 0.0
         invalid = [name for name, field in fields.items() if not field.valid]
-        return fields, confidence, invalid
+        return fields, confidence, invalid, semantic_count
 
     @staticmethod
     def _quality(fields: dict[str, FieldResult], confidence: float) -> tuple[int, float, int]:
