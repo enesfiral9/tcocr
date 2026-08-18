@@ -1,5 +1,5 @@
-export async function scanDocument(file) {
-  const body = new FormData(); body.append('file', file);
+export async function scanDocuments(files) {
+  const body = new FormData(); files.forEach(file => body.append('files', file));
   const response = await fetch('/api/scan', { method: 'POST', body });
   if (!response.ok) throw new Error((await response.json()).detail || 'Tarama başarısız.');
   return response.json();

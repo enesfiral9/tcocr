@@ -95,7 +95,7 @@ Uvicorn'u tek worker ile çalıştırın; birden fazla worker ayrı OCR modeli v
 ## API
 
 - `GET /api/health`: OCR hazırlık durumu
-- `POST /api/scan`: multipart `file`; PDF/JPG/JPEG/PNG
+- `POST /api/scan`: bir veya daha fazla multipart `files`; PDF/JPG/JPEG/PNG. Her dosya ayrı belge, PDF sayfaları ayrı sonuç olarak döner.
 - `POST /api/export`: tarayıcıdaki düzenlenmiş kayıtları Excel'e dönüştürür
 
 API dokümantasyonu kurum içinde `/docs` adresindedir. Uygulama yeniden başladığında bütün RAM verileri kaybolur; bu tasarım gereğidir.

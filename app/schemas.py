@@ -9,6 +9,7 @@ class FieldResult(BaseModel):
 
 
 class DocumentResult(BaseModel):
+    document: int = 1
     page: int
     tc_no: FieldResult = Field(default_factory=FieldResult)
     name: FieldResult = Field(default_factory=FieldResult)
@@ -28,6 +29,7 @@ class DocumentResult(BaseModel):
 
 
 class ExportRecord(BaseModel):
+    document: int = 1
     page: int
     tc_no: str = ""
     name: str = ""

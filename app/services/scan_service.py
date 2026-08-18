@@ -19,14 +19,15 @@ class ScanService:
     def __init__(self, ocr_service) -> None:
         self.ocr = ocr_service
 
-    def scan(self, source: Path, debug_dir: Path | None = None) -> list[DocumentResult]:
+    def scan(self, source: Path, debug_dir: Path | None = None, document_number: int = 1) -> list[DocumentResult]:
         results = []
         for page_number, image in iter_document_pages(source):
             try:
                 result = self._scan_page(page_number, image, debug_dir)
+                result.document = document_number
             except Exception:
                 logger.exception("page %s processing failed (no personal data logged)", page_number)
-                result = DocumentResult(page=page_number, failed=True, errors=["Sayfa işlenemedi."])
+                result = DocumentResult(document=document_number, page=page_number, failed=True, errors=["Sayfa işlenemedi."])
             results.append(result)
             logger.info("page %s processed; review=%s", page_number, result.requires_review)
             del image
